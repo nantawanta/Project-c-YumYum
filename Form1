@@ -1,0 +1,432 @@
+using MySql.Data.MySqlClient;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Drawing;
+using System.IO;
+using System.Linq; 
+using System.Windows.Forms;
+using System.Xml.Linq;
+using System.Text.RegularExpressions;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.StartPanel;
+
+namespace WinFormsApp2
+{
+    public partial class Form1 : Form
+    {
+        private readonly DBConnection dbConnection = new DBConnection();
+        private readonly Dictionary<string, int> initialStock = new Dictionary<string, int>();
+        private readonly string _loggedInUsername;
+        private bool isUpdatingTableNumber = false;
+        private bool isUpdatingCustomerName = false;
+        private int _maxTableNumber = 20;
+
+
+        public Form1(string username)
+        {
+            InitializeComponent();
+            _loggedInUsername = username;
+        }
+        public void SetAdminMode(bool isAdmin)
+        {
+            // ตรวจสอบก่อนว่าปุ่ม adminButton มีอยู่จริงหรือไม่
+            // (ปุ่มนี้อาจมีชื่ออื่น หรือคุณอาจจะยังไม่ได้สร้างในหน้า Design)
+            if (this.Controls.ContainsKey("adminButton"))
+            {
+                Button adminButton = this.Controls["adminButton"] as Button;
+                if (adminButton != null)
+                {
+                    adminButton.Visible = isAdmin;
+                }
+            }
+        }
+
+        private void Form1_Load(object sender, EventArgs e)
+        {
+            LoadMaxTableSetting();
+            searchTextBox.TextChanged += new EventHandler(searchTextBox_TextChanged);
+            loggedInUserLabel.Text = $"ผู้ใช้งาน: {_loggedInUsername}";
+            LoadStockItems();
+            UpdateTotalPrice();
+        }
+        private void LoadStockItems(string searchTerm = "")
+        {
+            flowLayoutPanel1.SuspendLayout();
+            initialStock.Clear();
+            flowLayoutPanel1.Controls.Clear();
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string query = "SELECT name, price, amount, photo FROM stock";
+                    if (!string.IsNullOrWhiteSpace(searchTerm))
+                    {
+                        query += " WHERE name LIKE @searchTerm";
+                    }
+
+                    var cmd = new MySqlCommand(query, conn);
+
+                    if (!string.IsNullOrWhiteSpace(searchTerm))
+                    {
+                        cmd.Parameters.AddWithValue("@searchTerm", $"%{searchTerm}%");
+                    }
+
+                    conn.Open();
+                    using (MySqlDataReader dataReader = cmd.ExecuteReader())
+                    {
+                        while (dataReader.Read())
+                        {
+                            string itemName = dataReader["name"].ToString() ?? "N/A";
+                            decimal itemPrice = Convert.ToDecimal(dataReader["price"]);
+                            int itemAmount = Convert.ToInt32(dataReader["amount"]);
+
+                            if (!initialStock.ContainsKey(itemName))
+                            {
+                                initialStock.Add(itemName, itemAmount);
+                            }
+
+                            Panel itemPanel = new Panel
+                            {
+                                Size = new Size(180, 220),
+                                BorderStyle = BorderStyle.FixedSingle,
+                                Margin = new Padding(10),
+                                Cursor = Cursors.Hand,
+                                BackColor = Color.White
+                            };
+                            PictureBox pictureBox = new PictureBox
+                            {
+                                Location = new Point(10, 10),
+                                Size = new Size(160, 120),
+                                SizeMode = PictureBoxSizeMode.Zoom
+                            };
+                            if (!dataReader.IsDBNull(dataReader.GetOrdinal("photo")))
+                            {
+                                try
+                                {
+                                    byte[] img = (byte[])dataReader["photo"];
+                                    if (img.Length > 0)
+                                    {
+                                        using (MemoryStream ms = new MemoryStream(img))
+                                        {
+                                            pictureBox.Image = Image.FromStream(ms);
+                                        }
+                                    }
+                                }
+                                catch { pictureBox.Image = null; }
+                            }
+                            itemPanel.Controls.Add(pictureBox);
+
+                            Label nameLabel = new Label
+                            {
+                                Text = itemName,
+                                Location = new Point(10, 140),
+                                AutoSize = false,
+                                Size = new Size(160, 25),
+                                TextAlign = ContentAlignment.MiddleCenter,
+                                Font = new Font("Tahoma", 10, FontStyle.Bold)
+                            };
+                            itemPanel.Controls.Add(nameLabel);
+
+                            Label priceLabel = new Label
+                            {
+                                Text = $"฿{itemPrice:N2}",
+                                Location = new Point(10, 165),
+                                AutoSize = false,
+                                Size = new Size(160, 20),
+                                TextAlign = ContentAlignment.MiddleCenter,
+                                Font = new Font("Tahoma", 9),
+                                ForeColor = Color.Green
+                            };
+                            itemPanel.Controls.Add(priceLabel);
+
+                            Label amountLabel = new Label
+                            {
+                                Location = new Point(10, 190),
+                                AutoSize = false,
+                                Size = new Size(160, 20),
+                                TextAlign = ContentAlignment.MiddleCenter,
+                                Font = new Font("Tahoma", 8),
+                            };
+
+                            if (itemAmount <= 0)
+                            {
+                                amountLabel.Text = "หมดสต็อค";
+                                amountLabel.ForeColor = Color.Red;
+                                itemPanel.Cursor = Cursors.Default;
+                            }
+                            else if (itemAmount < 10)
+                            {
+                                amountLabel.Text = $"คงเหลือ: {itemAmount}";
+                                amountLabel.ForeColor = Color.Red;
+                            }
+                            else
+                            {
+                                amountLabel.Text = $"คงเหลือ: {itemAmount}";
+                                amountLabel.ForeColor = Color.Gray;
+                            }
+                            itemPanel.Controls.Add(amountLabel);
+
+                            itemPanel.Tag = new { Name = itemName, Price = itemPrice };
+
+                            if (itemAmount > 0)
+                            {
+                                itemPanel.Click += new EventHandler(ProductPanel_Click);
+                                foreach (Control control in itemPanel.Controls)
+                                {
+                                    control.Click += new EventHandler(ProductPanel_Click);
+                                }
+                            }
+                            flowLayoutPanel1.Controls.Add(itemPanel);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("เกิดข้อผิดพลาดในการโหลดสินค้า: " + ex.Message);
+                }
+            }
+            flowLayoutPanel1.ResumeLayout();
+        }
+        private void searchTextBox_TextChanged(object? sender, EventArgs e)
+        {
+            LoadStockItems(searchTextBox.Text);
+        }
+        private void LoadMaxTableSetting()
+        {
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string query = "SELECT setting_value FROM app_settings WHERE setting_key = 'max_tables'";
+                    var cmd = new MySqlCommand(query, conn);
+                    conn.Open();
+                    object result = cmd.ExecuteScalar();
+
+                    if (result != null && int.TryParse(result.ToString(), out int maxTables))
+                    {
+                        _maxTableNumber = maxTables;
+                    }
+                    // ถ้าไม่มีค่าใน DB หรือมีปัญหา ก็จะใช้ค่า default 20 ที่ตั้งไว้
+                }
+                catch
+                {
+                    // ถ้าเกิด Error ในการเชื่อมต่อ ให้ใช้ค่า Default ที่ตั้งไว้
+                    _maxTableNumber = 20;
+                }
+            }
+        }
+
+        private void ProductPanel_Click(object? sender, EventArgs e)
+        {
+            var clickedPanel = (sender as Panel) ?? (sender as Control)?.Parent as Panel;
+            if (clickedPanel?.Tag == null) return;
+
+            var productInfo = (dynamic)clickedPanel.Tag;
+            string name = productInfo.Name;
+            decimal price = productInfo.Price;
+
+            using (var flavorForm = new FlavorSelectionForm(name))
+            {
+                if (flavorForm.ShowDialog() == DialogResult.OK)
+                {
+                    string selectedFlavors = flavorForm.SelectedFlavorsSummary;
+                    int quantityToAdd = flavorForm.SelectedQuantity;
+
+                    int availableStock = initialStock.ContainsKey(name) ? initialStock[name] : 0;
+                    int quantityInCart = GetCurrentCartQuantity(name);
+
+                    if ((quantityInCart + quantityToAdd) > 10)
+                    {
+                        MessageBox.Show($"ไม่สามารถเพิ่ม '{name}' ได้\nจำกัดการซื้อสินค้าชนิดนี้ไม่เกิน 10 ชิ้นต่อหนึ่งออเดอร์\nปัจจุบันมีในตะกร้าแล้ว: {quantityInCart} ชิ้น", "เกินขีดจำกัดการซื้อ");
+                        return;
+                    }
+
+                    if ((quantityInCart + quantityToAdd) > availableStock)
+                    {
+                        MessageBox.Show($"ไม่สามารถเพิ่ม '{name}' ได้\nสินค้ามีในสต็อก: {availableStock} ชิ้น\nมีในตะกร้าแล้ว: {quantityInCart} ชิ้น", "สินค้าไม่เพียงพอ");
+                        return;
+                    }
+
+                    foreach (DataGridViewRow row in cartDataGridView.Rows)
+                    {
+                        if (row.IsNewRow) continue;
+                        if ((row.Cells["colItemName"].Value?.ToString() ?? "") == name &&
+                            (row.Cells["colFlavors"].Value?.ToString() ?? "") == selectedFlavors)
+                        {
+                            int currentQuantity = Convert.ToInt32(row.Cells["colQuantity"].Value);
+                            int newQuantity = currentQuantity + quantityToAdd;
+                            row.Cells["colQuantity"].Value = newQuantity;
+                            row.Cells["colTotal"].Value = newQuantity * price;
+                            UpdateTotalPrice();
+                            return;
+                        }
+                    }
+                    cartDataGridView.Rows.Add(name, selectedFlavors, price, quantityToAdd, price * quantityToAdd, "ลบ");
+                    UpdateTotalPrice();
+                }
+            }
+        }
+
+        private int GetCurrentCartQuantity(string itemName)
+        {
+            int quantityInCart = 0;
+            foreach (DataGridViewRow row in cartDataGridView.Rows)
+            {
+                if (row.IsNewRow) continue;
+                if (row.Cells["colItemName"].Value != null && row.Cells["colItemName"].Value.ToString() == itemName)
+                {
+                    quantityInCart += Convert.ToInt32(row.Cells["colQuantity"].Value);
+                }
+            }
+            return quantityInCart;
+        }
+
+        private void UpdateTotalPrice()
+        {
+            decimal total = 0;
+            foreach (DataGridViewRow row in cartDataGridView.Rows)
+            {
+                if (row.IsNewRow) continue;
+                if (row.Cells["colTotal"].Value != null &&
+                    decimal.TryParse(row.Cells["colTotal"].Value.ToString(), out decimal rowTotal))
+                {
+                    total += rowTotal;
+                }
+            }
+            totalPriceLabel.Text = $"ราคารวม: {total:N2} บาท";
+        }
+
+        private void cartDataGridView_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex >= 0 && e.ColumnIndex == cartDataGridView.Columns["colDelete"].Index)
+            {
+                if (!cartDataGridView.Rows[e.RowIndex].IsNewRow)
+                {
+                    cartDataGridView.Rows.RemoveAt(e.RowIndex);
+                    UpdateTotalPrice();
+                }
+            }
+        }
+        private void ClearCartAndForm()
+        {
+            cartDataGridView.Rows.Clear();
+            tableNumberTextBox.Clear();
+            UpdateTotalPrice();
+        }
+
+        private void checkoutButton_Click(object sender, EventArgs e)
+        {
+            if (cartDataGridView.Rows.Count == 0 || (cartDataGridView.Rows.Count == 1 && cartDataGridView.Rows[0].IsNewRow))
+            {
+                MessageBox.Show("กรุณาเพิ่มสินค้าลงในตะกร้าก่อน");
+                return;
+            }
+
+            string customerName = this._loggedInUsername;
+            string tableNumber = tableNumberTextBox.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(tableNumber))
+            {
+                MessageBox.Show("กรุณากรอกหมายเลขโต๊ะ");
+                return;
+            }
+
+            List<OrderItem> orderItems = new List<OrderItem>();
+            foreach (DataGridViewRow row in cartDataGridView.Rows)
+            {
+                if (row.IsNewRow) continue;
+                orderItems.Add(new OrderItem
+                {
+                    Name = row.Cells["colItemName"].Value.ToString(),
+                    Price = Convert.ToDecimal(row.Cells["colPrice"].Value),
+                    Quantity = Convert.ToInt32(row.Cells["colQuantity"].Value),
+                    Flavors = row.Cells["colFlavors"].Value?.ToString() ?? ""
+                });
+            }
+
+            using (PaymentForm paymentForm = new PaymentForm(orderItems, customerName, tableNumber))
+            {
+                if (paymentForm.ShowDialog() == DialogResult.OK)
+                {
+                    MessageBox.Show("ทำรายการสำเร็จ ขอบคุณที่ใช้บริการ");
+                    ClearCartAndForm();
+                    LoadStockItems();
+                }
+            }
+        }
+
+        private void adminButton_Click(object sender, EventArgs e)
+        {
+            // ไม่ต้องล็อกอินซ้ำอีกแล้ว เพราะล็อกอินมาแล้ว
+            using (var adminForm = new AdminForm())
+            {
+                adminForm.ShowDialog();
+            }
+            LoadStockItems();
+        }
+        private void aboutMeButton_Click(object sender, EventArgs e)
+        {
+            using (var aboutForm = new AboutMeForm())
+            {
+                aboutForm.ShowDialog();
+            }
+        }
+        private void cusName_Click(object sender, EventArgs e) { }
+        private void tableNum_Click(object sender, EventArgs e) { }
+        private void tableNumberTextBox_TextChanged(object sender, EventArgs e)
+        {
+            if (isUpdatingTableNumber) // ถ้าการเปลี่ยนแปลงนี้เกิดจากโค้ดของเราเอง ให้ออกจากฟังก์ชันไปเลยเพื่อไม่ให้ทำงานซ้ำซ้อน
+            {
+                return;
+            }
+
+            if (string.IsNullOrEmpty(tableNumberTextBox.Text)) // ถ้าในกล่องข้อความไม่มีตัวอักษรเลย ก็ไม่ต้องทำอะไร
+            {
+                return;
+            }
+
+            if (int.TryParse(tableNumberTextBox.Text, out int tableNum)) // พยายามแปลงข้อความเป็นตัวเลข
+            {
+                if (tableNum > _maxTableNumber)// ถ้าตัวเลขที่แปลงได้มีค่ามากกว่า 20
+                {
+                    MessageBox.Show($"หมายเลขโต๊ะสูงสุดคือ {_maxTableNumber}", "แจ้งเตือน", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+                    isUpdatingTableNumber = true;
+                    tableNumberTextBox.Text = _maxTableNumber.ToString();
+                    isUpdatingTableNumber = false;
+
+                    tableNumberTextBox.SelectionStart = tableNumberTextBox.Text.Length;
+                }
+                else if (tableNum < 1) // ถ้าตัวเลขน้อยกว่า 1 (เช่น 0)
+                {
+                    MessageBox.Show("หมายเลขโต๊ะต้องไม่น้อยกว่า 1", "แจ้งเตือน", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    isUpdatingTableNumber = true;
+                    tableNumberTextBox.Text = "1"; // กำหนดค่าเริ่มต้นเป็น 1
+                    isUpdatingTableNumber = false;
+
+                    tableNumberTextBox.SelectionStart = tableNumberTextBox.Text.Length;
+                }
+            }
+            else // ถ้าข้อความที่กรอกมาไม่สามารถแปลงเป็นตัวเลขได้ (เช่น "abc")
+            {
+                MessageBox.Show("กรุณากรอกหมายเลขโต๊ะเป็นตัวเลขเท่านั้น", "ข้อมูลไม่ถูกต้อง", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                isUpdatingTableNumber = true;
+
+                // ลบตัวอักษรที่ไม่ใช่ตัวเลขทิ้งไป
+                string cleanedText = new string(tableNumberTextBox.Text.Where(char.IsDigit).ToArray());
+                tableNumberTextBox.Text = cleanedText;
+
+                isUpdatingTableNumber = false;
+
+                tableNumberTextBox.SelectionStart = tableNumberTextBox.Text.Length;
+            }
+        }
+        private void totalPriceLabel_Click(object sender, EventArgs e) { }
+
+        private void backToLoginButton_Click(object sender, EventArgs e)
+        {
+            this.Close();
+
+        }
+    }
+}
