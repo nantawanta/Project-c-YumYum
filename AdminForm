@@ -1,0 +1,978 @@
+using MySql.Data.MySqlClient;
+using System;
+using System.Data;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Windows.Forms;
+using System.Xml.Linq;
+using ClosedXML.Excel;
+using System.Diagnostics;
+using System.Text.RegularExpressions;
+
+namespace WinFormsApp2
+{
+    public enum TimeFilter
+    {
+        All,
+        Today,
+        ThisMonth,
+        ThisYear
+    }
+
+    public partial class AdminForm : Form
+    {
+        private readonly DBConnection dbConnection = new DBConnection();
+
+        //ตัวแปรสำหรับหน้าจัดการสินค้า 
+        private byte[]? selectedImageBytes = null;
+        private bool _isProgrammaticallyChangingSelection = false;
+        //ตัวแปรสำหรับหน้าจัดการรสชาติ
+        private int? _selectedFlavorId = null;
+        private string _selectedFlavorName = "";
+        private bool isCheckingFlavorText = false;
+
+        private bool _isBestSellerTabLoaded = false;
+
+        public AdminForm()
+        {
+            InitializeComponent();
+            this.historyDataGridView.AutoGenerateColumns = false;
+        }
+
+        private void AdminForm_Load(object sender, EventArgs e)
+        {
+            startDatePicker.Value = DateTime.Now.AddMonths(-1);
+            endDatePicker.Value = DateTime.Now;
+
+            stockDataGridView.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            stockDataGridView.MultiSelect = false;
+
+            LoadStockData();
+            LoadHistoryData();
+            LoadFlavorData();
+            LoadAppSettings();
+            LoadMemberData();
+
+            stockDataGridView.SelectionChanged += new EventHandler(stockDataGridView_SelectionChanged);
+            flavorDataGridView.SelectionChanged += new EventHandler(flavorDataGridView_SelectionChanged);
+            flavorNameTextBox.TextChanged += new EventHandler(flavorNameTextBox_TextChanged);
+
+            rbBestSellerAll.CheckedChanged += new EventHandler(rbBestSeller_CheckedChanged);
+            rbBestSellerToday.CheckedChanged += new EventHandler(rbBestSeller_CheckedChanged);
+            rbBestSellerThisMonth.CheckedChanged += new EventHandler(rbBestSeller_CheckedChanged);
+            rbBestSellerThisYear.CheckedChanged += new EventHandler(rbBestSeller_CheckedChanged);
+            rbBestSellerCustom.CheckedChanged += new EventHandler(rbBestSeller_CheckedChanged);
+
+            btnCustomSearch.Click += new EventHandler(btnCustomSearch_Click);
+            cmbCustomFilterType.SelectedIndexChanged += new EventHandler(cmbCustomFilterType_SelectedIndexChanged);
+
+            cmbCustomFilterType.Items.Add("รายวัน");
+            cmbCustomFilterType.Items.Add("รายเดือน");
+            cmbCustomFilterType.Items.Add("รายปี");
+            cmbCustomFilterType.SelectedIndex = 0;
+
+            this.tabControl1.SelectedIndexChanged += new System.EventHandler(this.tabControl1_SelectedIndexChanged);
+        }
+
+        private void tabControl1_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            if (this.tabControl1.SelectedTab == this.tabPageBestSellers && !_isBestSellerTabLoaded)
+            {
+                LoadBestSellersData(TimeFilter.All);
+                bestSellerFilterInfoLabel.Text = "ข้อมูลสำหรับ: ภาพรวมทั้งหมด";
+                _isBestSellerTabLoaded = true;
+            }
+        }
+
+        #region จัดการสินค้า (Stock Management)
+        private void LoadStockData()
+        {
+            DataTable stockDataTable = new DataTable();
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string query = "SELECT id, name, price, amount FROM stock";
+                    var adapter = new MySqlDataAdapter(query, conn);
+                    conn.Open();
+                    adapter.Fill(stockDataTable);
+                }
+                catch (Exception ex) { MessageBox.Show("เกิดข้อผิดพลาดในการโหลดข้อมูลสินค้า: " + ex.Message); }
+            }
+            stockDataGridView.DataSource = stockDataTable;
+            ClearInputFields();
+        }
+
+        private void stockDataGridView_SelectionChanged(object? sender, EventArgs e)
+        {
+            if (_isProgrammaticallyChangingSelection) return;
+            if (stockDataGridView.SelectedRows.Count > 0 && !stockDataGridView.SelectedRows[0].IsNewRow)
+            {
+                DataGridViewRow selectedRow = stockDataGridView.SelectedRows[0];
+                idTextBox.Text = selectedRow.Cells["id"].Value?.ToString() ?? "";
+                nameTextBox.Text = selectedRow.Cells["name"].Value?.ToString() ?? "";
+                priceTextBox.Text = selectedRow.Cells["price"].Value?.ToString() ?? "";
+                amountTextBox.Text = selectedRow.Cells["amount"].Value?.ToString() ?? "";
+                if (int.TryParse(idTextBox.Text, out int productId))
+                {
+                    LoadImageForSelectedRow(productId);
+                }
+            }
+        }
+
+        private void LoadImageForSelectedRow(int productId)
+        {
+            selectedImageBytes = null;
+            photoPictureBox.Image = null;
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string query = "SELECT photo FROM stock WHERE id = @id";
+                    var cmd = new MySqlCommand(query, conn);
+                    cmd.Parameters.AddWithValue("@id", productId);
+                    conn.Open();
+                    object result = cmd.ExecuteScalar();
+                    if (result != null && result != DBNull.Value)
+                    {
+                        selectedImageBytes = (byte[])result;
+                        using (var ms = new MemoryStream(selectedImageBytes))
+                        {
+                            photoPictureBox.Image = Image.FromStream(ms);
+                        }
+                    }
+                }
+                catch (Exception ex) { MessageBox.Show("เกิดข้อผิดพลาดในการโหลดรูปภาพ: " + ex.Message); }
+            }
+        }
+
+        private void ClearInputFields()
+        {
+            idTextBox.Clear();
+            nameTextBox.Clear();
+            priceTextBox.Clear();
+            amountTextBox.Clear();
+            photoPictureBox.Image = null;
+            selectedImageBytes = null;
+            _isProgrammaticallyChangingSelection = true;
+            stockDataGridView.ClearSelection();
+            _isProgrammaticallyChangingSelection = false;
+        }
+
+        private void uploadButton_Click(object sender, EventArgs e)
+        {
+            using (var ofd = new OpenFileDialog())
+            {
+                ofd.Filter = "Image Files|*.jpg;*.jpeg;*.png";
+                if (ofd.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        selectedImageBytes = File.ReadAllBytes(ofd.FileName);
+                        photoPictureBox.Image = new Bitmap(ofd.FileName);
+                    }
+                    catch (Exception ex) { MessageBox.Show("ไม่สามารถโหลดไฟล์รูปภาพได้: " + ex.Message); }
+                }
+            }
+        }
+
+        private void addButton_Click(object sender, EventArgs e)
+        {
+            if (!string.IsNullOrEmpty(idTextBox.Text))
+            {
+                MessageBox.Show("นี่คือข้อมูลสำหรับ 'แก้ไข' หากต้องการเพิ่มใหม่ กรุณากดปุ่ม 'เพิ่มรายการใหม่' ก่อน", "ขั้นตอนไม่ถูกต้อง", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(nameTextBox.Text) || !decimal.TryParse(priceTextBox.Text, out _) || !int.TryParse(amountTextBox.Text, out _))
+            {
+                MessageBox.Show("กรุณากรอกข้อมูลสินค้าให้ครบถ้วนและถูกต้อง"); return;
+            }
+
+            string newProductName = nameTextBox.Text.Trim();
+            using (var connCheck = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string checkQuery = "SELECT COUNT(*) FROM stock WHERE name = @name";
+                    var checkCmd = new MySqlCommand(checkQuery, connCheck);
+                    checkCmd.Parameters.AddWithValue("@name", newProductName);
+                    connCheck.Open();
+                    long existingCount = Convert.ToInt64(checkCmd.ExecuteScalar());
+                    if (existingCount > 0)
+                    {
+                        MessageBox.Show($"มีสินค้าชื่อ '{newProductName}' อยู่ในระบบแล้ว ไม่สามารถเพิ่มซ้ำได้", "ข้อมูลซ้ำ", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("เกิดข้อผิดพลาดในการตรวจสอบข้อมูลซ้ำ: " + ex.Message);
+                    return;
+                }
+            }
+
+            long newId = -1;
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string query = "INSERT INTO stock (name, price, amount, photo) VALUES (@name, @price, @amount, @photo); SELECT LAST_INSERT_ID();";
+                    var cmd = new MySqlCommand(query, conn);
+                    cmd.Parameters.AddWithValue("@name", newProductName);
+                    cmd.Parameters.AddWithValue("@price", Convert.ToDecimal(priceTextBox.Text));
+                    cmd.Parameters.AddWithValue("@amount", Convert.ToInt32(amountTextBox.Text));
+                    cmd.Parameters.AddWithValue("@photo", selectedImageBytes ?? (object)DBNull.Value);
+                    conn.Open();
+                    newId = Convert.ToInt64(cmd.ExecuteScalar());
+                    MessageBox.Show("เพิ่มสินค้าสำเร็จ");
+                }
+                catch (Exception ex) { MessageBox.Show("เกิดข้อผิดพลาด: " + ex.Message); }
+            }
+            LoadStockData();
+            if (newId != -1)
+            {
+                SelectRowInGrid(newId);
+            }
+        }
+
+        private void updateButton_Click(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(idTextBox.Text))
+            {
+                MessageBox.Show("กรุณาคลิกเลือกรายการในตารางที่ต้องการแก้ไขก่อน", "ขั้นตอนไม่ถูกต้อง", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            long updatedId = Convert.ToInt64(idTextBox.Text);
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string query = "UPDATE stock SET name = @name, price = @price, amount = @amount, photo = @photo WHERE id = @id";
+                    var cmd = new MySqlCommand(query, conn);
+                    cmd.Parameters.AddWithValue("@name", nameTextBox.Text);
+                    cmd.Parameters.AddWithValue("@price", Convert.ToDecimal(priceTextBox.Text));
+                    cmd.Parameters.AddWithValue("@amount", Convert.ToInt32(amountTextBox.Text));
+                    cmd.Parameters.AddWithValue("@id", updatedId);
+                    cmd.Parameters.AddWithValue("@photo", selectedImageBytes ?? (object)DBNull.Value);
+                    conn.Open();
+                    cmd.ExecuteNonQuery();
+                    MessageBox.Show("แก้ไขข้อมูลสำเร็จ");
+                }
+                catch (Exception ex) { MessageBox.Show("เกิดข้อผิดพลาด: " + ex.Message); }
+            }
+            LoadStockData();
+            SelectRowInGrid(updatedId);
+        }
+
+        private void deleteButton_Click(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(idTextBox.Text))
+            {
+                MessageBox.Show("กรุณาคลิกเลือกรายการในตารางที่ต้องการลบก่อน", "ขั้นตอนไม่ถูกต้อง", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (MessageBox.Show($"คุณต้องการลบสินค้า '{nameTextBox.Text}' ใช่หรือไม่?", "ยืนยันการลบ", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
+                using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+                {
+                    try
+                    {
+                        string query = "DELETE FROM stock WHERE id = @id";
+                        var cmd = new MySqlCommand(query, conn);
+                        cmd.Parameters.AddWithValue("@id", Convert.ToInt32(idTextBox.Text));
+                        conn.Open();
+                        cmd.ExecuteNonQuery();
+                        MessageBox.Show("ลบข้อมูลสำเร็จ");
+                    }
+                    catch (Exception ex) { MessageBox.Show("เกิดข้อผิดพลาด: " + ex.Message); }
+                }
+                LoadStockData();
+            }
+        }
+
+        private void clearButton_Click(object sender, EventArgs e)
+        {
+            ClearInputFields();
+            nameTextBox.Focus();
+        }
+
+        private void SelectRowInGrid(long idToSelect)
+        {
+            _isProgrammaticallyChangingSelection = true;
+            foreach (DataGridViewRow row in stockDataGridView.Rows)
+            {
+                if (row.Cells["id"].Value != null && Convert.ToInt64(row.Cells["id"].Value) == idToSelect)
+                {
+                    stockDataGridView.ClearSelection();
+                    row.Selected = true;
+                    if (row.Index > -1 && row.Index < stockDataGridView.RowCount)
+                    {
+                        stockDataGridView.FirstDisplayedScrollingRowIndex = row.Index;
+                    }
+                    break;
+                }
+            }
+            _isProgrammaticallyChangingSelection = false;
+        }
+        #endregion
+
+        #region ประวัติการขาย (Sales History)
+        private void LoadHistoryData(DateTime? startDate = null, DateTime? endDate = null, string customerName = "")
+        {
+            var historyDataTable = new DataTable();
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    // 1. สร้าง Query พื้นฐาน
+                    var queryBuilder = new System.Text.StringBuilder(
+                        @"SELECT 
+                    id, order_datetime, customer_name, customer_table, food_name, 
+                    price_per_item, amount, customer_phone, slip_image, total_price, flavor_details 
+                FROM history ");
+
+                    var conditions = new List<string>();
+                    var cmd = new MySqlCommand(); // สร้าง Command object แยกออกมา
+
+                    // 2. เพิ่มเงื่อนไขการค้นหาตาม "วันที่" ถ้ามี
+                    if (startDate.HasValue && endDate.HasValue)
+                    {
+                        conditions.Add("DATE(order_datetime) BETWEEN @startDate AND @endDate");
+                        cmd.Parameters.AddWithValue("@startDate", startDate.Value.ToString("yyyy-MM-dd"));
+                        cmd.Parameters.AddWithValue("@endDate", endDate.Value.ToString("yyyy-MM-dd"));
+                    }
+
+                    // 3. เพิ่มเงื่อนไขการค้นหาตาม "ชื่อลูกค้า" ถ้ามี
+                    if (!string.IsNullOrWhiteSpace(customerName))
+                    {
+                        // ใช้ LIKE เพื่อให้ค้นหาแค่บางส่วนของชื่อได้ เช่น พิมพ์ "สม" ก็จะเจอ "สมชาย"
+                        conditions.Add("customer_name LIKE @customerName");
+                        cmd.Parameters.AddWithValue("@customerName", $"%{customerName}%");
+                    }
+
+                    // 4. รวมเงื่อนไขทั้งหมดเข้ากับ Query หลัก
+                    if (conditions.Count > 0)
+                    {
+                        queryBuilder.Append("WHERE " + string.Join(" AND ", conditions));
+                    }
+
+                    queryBuilder.Append(" ORDER BY order_datetime DESC");
+
+                    // 5. ตั้งค่า Command และ Adapter
+                    cmd.Connection = conn;
+                    cmd.CommandText = queryBuilder.ToString();
+                    var adapter = new MySqlDataAdapter(cmd);
+
+                    conn.Open();
+                    adapter.Fill(historyDataTable);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("เกิดข้อผิดพลาดในการโหลดประวัติการขาย: " + ex.Message);
+                    return;
+                }
+            }
+
+            // ส่วนแสดงผลใน DataGridView (เหมือนเดิม)
+            historyDataGridView.RowTemplate.Height = 80;
+            if (historyDataGridView.Columns["colSlipImage"] is DataGridViewImageColumn imageCol)
+            {
+                imageCol.ImageLayout = DataGridViewImageCellLayout.Zoom;
+            }
+            historyDataGridView.DataSource = historyDataTable;
+        }
+
+        private void exportButton_Click(object sender, EventArgs e)
+        {
+            if (historyDataGridView.Rows.Count == 0)
+            {
+                MessageBox.Show("ไม่มีข้อมูลสำหรับส่งออก", "แจ้งเตือน", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using (SaveFileDialog sfd = new SaveFileDialog() { Filter = "Excel Workbook|*.xlsx" })
+            {
+                sfd.FileName = $"ประวัติการขาย_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
+                if (sfd.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        DataTable dt = new DataTable();
+                        foreach (DataGridViewColumn col in historyDataGridView.Columns)
+                        {
+                            if (!(col is DataGridViewImageColumn))
+                            {
+                                dt.Columns.Add(col.HeaderText);
+                            }
+                        }
+
+                        foreach (DataGridViewRow row in historyDataGridView.Rows)
+                        {
+                            DataRow dataRow = dt.NewRow();
+                            int currentCell = 0;
+                            foreach (DataGridViewCell cell in row.Cells)
+                            {
+                                if (!(historyDataGridView.Columns[cell.ColumnIndex] is DataGridViewImageColumn))
+                                {
+                                    dataRow[currentCell] = cell.Value;
+                                    currentCell++;
+                                }
+                            }
+                            dt.Rows.Add(dataRow);
+                        }
+
+                        using (var workbook = new XLWorkbook())
+                        {
+                            var worksheet = workbook.Worksheets.Add(dt, "ประวัติการขาย");
+                            worksheet.Columns().AdjustToContents();
+                            workbook.SaveAs(sfd.FileName);
+                        }
+                        DialogResult dialogResult = MessageBox.Show(
+                            "ส่งออกข้อมูลเป็นไฟล์ Excel สำเร็จ!\n\nคุณต้องการเปิดไฟล์ที่บันทึกไว้หรือไม่?",
+                            "สำเร็จ", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                        if (dialogResult == DialogResult.Yes)
+                        {
+                            Process.Start(new ProcessStartInfo(sfd.FileName) { UseShellExecute = true });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show("เกิดข้อผิดพลาดในการส่งออกข้อมูล: " + ex.Message, "ข้อผิดพลาด", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            }
+        }
+
+        private void searchHistoryButton_Click(object sender, EventArgs e)
+        {
+            string nameToSearch = searchNameTextBox.Text.Trim();
+            LoadHistoryData(startDatePicker.Value, endDatePicker.Value, nameToSearch);
+        }
+
+        private void resetHistoryButton_Click(object sender, EventArgs e)
+        {
+            searchNameTextBox.Clear();
+            LoadHistoryData();
+        }
+        #endregion
+
+        #region สินค้าขายดี (Best Sellers)
+        private void LoadBestSellersData(DateTime specificDay)
+        {
+            string whereClause = "WHERE DATE(order_datetime) = @selectedDate ";
+            MySqlParameter[] parameters = { new MySqlParameter("@selectedDate", specificDay.ToString("yyyy-MM-dd")) };
+            ExecuteBestSellerQuery(whereClause, parameters);
+        }
+
+        private void LoadBestSellersData(int year, int month)
+        {
+            string whereClause = "WHERE YEAR(order_datetime) = @selectedYear AND MONTH(order_datetime) = @selectedMonth ";
+            MySqlParameter[] parameters = {
+                new MySqlParameter("@selectedYear", year),
+                new MySqlParameter("@selectedMonth", month)
+            };
+            ExecuteBestSellerQuery(whereClause, parameters);
+        }
+
+        private void LoadBestSellersData(int year)
+        {
+            string whereClause = "WHERE YEAR(order_datetime) = @selectedYear ";
+            MySqlParameter[] parameters = { new MySqlParameter("@selectedYear", year) };
+            ExecuteBestSellerQuery(whereClause, parameters);
+        }
+
+        private void LoadBestSellersData(TimeFilter filter)
+        {
+            string whereClause = "";
+            switch (filter)
+            {
+                case TimeFilter.Today:
+                    whereClause = "WHERE DATE(order_datetime) = CURDATE() ";
+                    break;
+                case TimeFilter.ThisMonth:
+                    whereClause = "WHERE YEAR(order_datetime) = YEAR(CURDATE()) AND MONTH(order_datetime) = MONTH(CURDATE()) ";
+                    break;
+                case TimeFilter.ThisYear:
+                    whereClause = "WHERE YEAR(order_datetime) = YEAR(CURDATE()) ";
+                    break;
+            }
+            ExecuteBestSellerQuery(whereClause);
+        }
+
+        private void ExecuteBestSellerQuery(string whereClause, MySqlParameter[]? parameters = null)
+        {
+            var bestSellersTable = new DataTable();
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string query = $@"
+                        SELECT 
+                            food_name AS 'ชื่อสินค้า', 
+                            SUM(amount) AS 'จำนวนที่ขายได้'
+                        FROM history 
+                        {whereClause}
+                        GROUP BY food_name
+                        ORDER BY SUM(amount) DESC
+                        LIMIT 10;"; // ***** EDIT #2: อาจจะลด LIMIT เหลือ 10-15 เพื่อให้กราฟไม่แน่นเกินไป *****
+
+                    var cmd = new MySqlCommand(query, conn);
+                    if (parameters != null)
+                    {
+                        cmd.Parameters.AddRange(parameters);
+                    }
+
+                    var adapter = new MySqlDataAdapter(cmd);
+                    conn.Open();
+                    adapter.Fill(bestSellersTable);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("เกิดข้อผิดพลาดในการโหลดสินค้าขายดี: " + ex.Message);
+                }
+            }
+
+            // แสดงข้อมูลในตาราง (เหมือนเดิม)
+            bestSellersDataGridView.DataSource = bestSellersTable;
+            if (bestSellersDataGridView.Columns.Count > 0 && bestSellersDataGridView.Columns.Contains("ชื่อสินค้า"))
+            {
+                bestSellersDataGridView.Columns["ชื่อสินค้า"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+                bestSellersDataGridView.Columns["จำนวนที่ขายได้"].AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells;
+            }
+        }
+
+
+
+        private void rbBestSeller_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (sender is not RadioButton rb || !rb.Checked)
+            {
+                return;
+            }
+
+            customFilterGroupBox.Enabled = rbBestSellerCustom.Checked;
+
+            CultureInfo thaiCulture = new CultureInfo("th-TH");
+            string infoText = "ข้อมูลสำหรับ: ";
+
+            if (rbBestSellerToday.Checked)
+            {
+                infoText += $"วันนี้ ({DateTime.Now.ToString("d MMMM yyyy", thaiCulture)})";
+                LoadBestSellersData(TimeFilter.Today);
+            }
+            else if (rbBestSellerThisMonth.Checked)
+            {
+                infoText += $"เดือน{DateTime.Now.ToString("MMMM yyyy", thaiCulture)}";
+                LoadBestSellersData(TimeFilter.ThisMonth);
+            }
+            else if (rbBestSellerThisYear.Checked)
+            {
+                infoText += $"ปี {DateTime.Now.Year + 543}";
+                LoadBestSellersData(TimeFilter.ThisYear);
+            }
+            else if (rbBestSellerAll.Checked)
+            {
+                infoText += "ภาพรวมทั้งหมด";
+                LoadBestSellersData(TimeFilter.All);
+            }
+            else if (rbBestSellerCustom.Checked)
+            {
+                infoText = "กรุณาเลือกรูปแบบและข้อมูลที่ต้องการ จากนั้นกดปุ่ม 'ค้นหา'";
+                bestSellersDataGridView.DataSource = null;
+            }
+
+            bestSellerFilterInfoLabel.Text = infoText;
+        }
+
+        private void cmbCustomFilterType_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            string? selectedFilter = cmbCustomFilterType.SelectedItem?.ToString();
+
+            if (selectedFilter == "รายวัน")
+            {
+                dtpCustomFilterDate.Format = DateTimePickerFormat.Long;
+                dtpCustomFilterDate.CustomFormat = null;
+            }
+            else if (selectedFilter == "รายเดือน")
+            {
+                dtpCustomFilterDate.Format = DateTimePickerFormat.Custom;
+                dtpCustomFilterDate.CustomFormat = "MMMM yyyy";
+            }
+            else if (selectedFilter == "รายปี")
+            {
+                dtpCustomFilterDate.Format = DateTimePickerFormat.Custom;
+                dtpCustomFilterDate.CustomFormat = "yyyy";
+            }
+        }
+
+        private void btnCustomSearch_Click(object? sender, EventArgs e)
+        {
+            string? selectedFilter = cmbCustomFilterType.SelectedItem?.ToString();
+            if (string.IsNullOrEmpty(selectedFilter))
+            {
+                MessageBox.Show("กรุณาเลือกรูปแบบการค้นหา");
+                return;
+            }
+
+            DateTime selectedDate = dtpCustomFilterDate.Value;
+            CultureInfo thaiCulture = new CultureInfo("th-TH");
+
+            if (selectedFilter == "รายวัน")
+            {
+                LoadBestSellersData(selectedDate);
+                bestSellerFilterInfoLabel.Text = $"ข้อมูลสำหรับ: วันที่ {selectedDate.ToString("d MMMM yyyy", thaiCulture)}";
+            }
+            else if (selectedFilter == "รายเดือน")
+            {
+                LoadBestSellersData(selectedDate.Year, selectedDate.Month);
+                bestSellerFilterInfoLabel.Text = $"ข้อมูลสำหรับ: เดือน{selectedDate.ToString("MMMM yyyy", thaiCulture)}";
+            }
+            else if (selectedFilter == "รายปี")
+            {
+                LoadBestSellersData(selectedDate.Year);
+                bestSellerFilterInfoLabel.Text = $"ข้อมูลสำหรับ: ปี {selectedDate.Year + 543}";
+            }
+        }
+        #endregion
+
+        #region จัดการรสชาติ (Flavor Management)
+        private void LoadFlavorData()
+        {
+            var flavorDataTable = new DataTable();
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string query = "SELECT flavor_id, flavor_name FROM other_flavors";
+                    var adapter = new MySqlDataAdapter(query, conn);
+                    conn.Open();
+                    adapter.Fill(flavorDataTable);
+                }
+                catch (Exception ex) { MessageBox.Show("เกิดข้อผิดพลาดในการโหลดข้อมูลรสชาติ: " + ex.Message); }
+            }
+            flavorDataGridView.DataSource = flavorDataTable;
+            ClearFlavorForm();
+        }
+
+        private void ClearFlavorForm()
+        {
+            flavorNameTextBox.Clear();
+            _selectedFlavorId = null;
+            _selectedFlavorName = "";
+            flavorDataGridView.ClearSelection();
+        }
+
+        private void flavorDataGridView_SelectionChanged(object? sender, EventArgs e)
+        {
+            if (flavorDataGridView.SelectedRows.Count > 0 && !flavorDataGridView.SelectedRows[0].IsNewRow)
+            {
+                DataGridViewRow selectedRow = flavorDataGridView.SelectedRows[0];
+                _selectedFlavorId = Convert.ToInt32(selectedRow.Cells["flavor_id"].Value);
+                _selectedFlavorName = selectedRow.Cells["flavor_name"].Value?.ToString() ?? "";
+                flavorNameTextBox.Text = _selectedFlavorName;
+            }
+            else
+            {
+                _selectedFlavorId = null;
+                _selectedFlavorName = "";
+            }
+        }
+
+        private void addFlavorButton_Click(object sender, EventArgs e)
+        {
+            if (_selectedFlavorId.HasValue)
+            {
+                MessageBox.Show("นี่คือข้อมูลสำหรับ 'แก้ไข' หากต้องการเพิ่มใหม่ กรุณากดปุ่ม 'เพิ่มรายการใหม่' ก่อน", "ขั้นตอนไม่ถูกต้อง", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            string newFlavor = flavorNameTextBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(newFlavor))
+            {
+                MessageBox.Show("กรุณากรอกชื่อรสชาติที่ต้องการเพิ่ม", "ข้อมูลไม่ครบถ้วน", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            using (var connCheck = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string checkQuery = "SELECT COUNT(*) FROM other_flavors WHERE flavor_name = @name";
+                    var checkCmd = new MySqlCommand(checkQuery, connCheck);
+                    checkCmd.Parameters.AddWithValue("@name", newFlavor);
+                    connCheck.Open();
+                    long existingCount = Convert.ToInt64(checkCmd.ExecuteScalar());
+                    if (existingCount > 0)
+                    {
+                        MessageBox.Show($"มีรสชาติ '{newFlavor}' อยู่ในระบบแล้ว ไม่สามารถเพิ่มซ้ำได้", "ข้อมูลซ้ำ", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("เกิดข้อผิดพลาดในการตรวจสอบข้อมูลซ้ำ: " + ex.Message);
+                    return;
+                }
+            }
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string query = "INSERT INTO other_flavors (flavor_name) VALUES (@name)";
+                    var cmd = new MySqlCommand(query, conn);
+                    cmd.Parameters.AddWithValue("@name", newFlavor);
+                    conn.Open();
+                    cmd.ExecuteNonQuery();
+                    MessageBox.Show("เพิ่มรสชาติสำเร็จ");
+                }
+                catch (Exception ex) { MessageBox.Show("เกิดข้อผิดพลาด: " + ex.Message); }
+            }
+            LoadFlavorData();
+        }
+
+        private void updateFlavorButton_Click(object sender, EventArgs e)
+        {
+            if (!_selectedFlavorId.HasValue)
+            {
+                MessageBox.Show("กรุณาคลิกเลือกรายการที่ต้องการแก้ไขก่อน", "ข้อผิดพลาด", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            string updatedFlavor = flavorNameTextBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(updatedFlavor))
+            {
+                MessageBox.Show("กรุณากรอกชื่อรสชาติใหม่", "ข้อผิดพลาด", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            using (var connCheck = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string checkQuery = "SELECT COUNT(*) FROM other_flavors WHERE flavor_name = @name AND flavor_id != @id";
+                    var checkCmd = new MySqlCommand(checkQuery, connCheck);
+                    checkCmd.Parameters.AddWithValue("@name", updatedFlavor);
+                    checkCmd.Parameters.AddWithValue("@id", _selectedFlavorId.Value);
+                    connCheck.Open();
+                    long existingCount = Convert.ToInt64(checkCmd.ExecuteScalar());
+                    if (existingCount > 0)
+                    {
+                        MessageBox.Show($"มีรสชาติ '{updatedFlavor}' อยู่ในระบบแล้ว ไม่สามารถแก้ไขเป็นชื่อนี้ได้", "ข้อมูลซ้ำ", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("เกิดข้อผิดพลาดในการตรวจสอบข้อมูลซ้ำ: " + ex.Message);
+                    return;
+                }
+            }
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string query = "UPDATE other_flavors SET flavor_name = @name WHERE flavor_id = @id";
+                    var cmd = new MySqlCommand(query, conn);
+                    cmd.Parameters.AddWithValue("@name", updatedFlavor);
+                    cmd.Parameters.AddWithValue("@id", _selectedFlavorId.Value);
+                    conn.Open();
+                    cmd.ExecuteNonQuery();
+                    MessageBox.Show("แก้ไขข้อมูลสำเร็จ");
+                }
+                catch (Exception ex) { MessageBox.Show("เกิดข้อผิดพลาด: " + ex.Message); }
+            }
+            LoadFlavorData();
+        }
+
+        private void deleteFlavorButton_Click(object sender, EventArgs e)
+        {
+            if (!_selectedFlavorId.HasValue)
+            {
+                MessageBox.Show("กรุณาคลิกเลือกรายการที่ต้องการลบก่อน", "ข้อผิดพลาด", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (MessageBox.Show($"คุณต้องการลบรสชาติ '{_selectedFlavorName}' ใช่หรือไม่?", "ยืนยันการลบ", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
+                using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+                {
+                    try
+                    {
+                        string query = "DELETE FROM other_flavors WHERE flavor_id = @id";
+                        var cmd = new MySqlCommand(query, conn);
+                        cmd.Parameters.AddWithValue("@id", _selectedFlavorId.Value);
+                        conn.Open();
+                        cmd.ExecuteNonQuery();
+                        MessageBox.Show("ลบข้อมูลสำเร็จ");
+                    }
+                    catch (Exception ex) { MessageBox.Show("เกิดข้อผิดพลาด: " + ex.Message); }
+                }
+                LoadFlavorData();
+            }
+        }
+
+        private void flavorNameTextBox_TextChanged(object? sender, EventArgs e)
+        {
+            if (isCheckingFlavorText) return;
+            if (sender is not TextBox tb) return;
+            string currentText = tb.Text;
+            string pattern = "^[a-zA-Zก-๙\\s]*$";
+            if (!Regex.IsMatch(currentText, pattern))
+            {
+                isCheckingFlavorText = true;
+                string cleanedText = Regex.Replace(currentText, "[^a-zA-Zก-๙\\s]", "");
+                tb.Text = cleanedText;
+                tb.SelectionStart = tb.Text.Length;
+                isCheckingFlavorText = false;
+            }
+        }
+        private void LoadAppSettings()
+        {
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    string query = "SELECT setting_value FROM app_settings WHERE setting_key = 'max_tables'";
+                    var cmd = new MySqlCommand(query, conn);
+                    conn.Open();
+                    object result = cmd.ExecuteScalar();
+
+                    // ถ้ามีค่าในฐานข้อมูล
+                    if (result != null && int.TryParse(result.ToString(), out int maxTables))
+                    {
+                        maxTablesNumericUpDown.Value = maxTables;
+                    }
+                    else // ถ้าไม่มีค่า ให้ใช้ค่าเริ่มต้น
+                    {
+                        maxTablesNumericUpDown.Value = 20;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("เกิดข้อผิดพลาดในการโหลดการตั้งค่า: " + ex.Message);
+                    maxTablesNumericUpDown.Value = 20; // กรณี Error ให้ใช้ค่าเริ่มต้น
+                }
+            }
+        }
+        private void saveSettingsButton_Click(object sender, EventArgs e)
+        {
+            int newMaxTables = (int)maxTablesNumericUpDown.Value;
+
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    // คำสั่งนี้จะ INSERT ถ้ายังไม่มี key 'max_tables' หรือจะ UPDATE ถ้ามีอยู่แล้ว
+                    string query = @"
+                INSERT INTO app_settings (setting_key, setting_value)
+                VALUES ('max_tables', @value)
+                ON DUPLICATE KEY UPDATE setting_value = @value;";
+
+                    var cmd = new MySqlCommand(query, conn);
+                    cmd.Parameters.AddWithValue("@value", newMaxTables.ToString());
+                    conn.Open();
+                    cmd.ExecuteNonQuery();
+                    MessageBox.Show("บันทึกการตั้งค่าจำนวนโต๊ะสำเร็จ!", "สำเร็จ", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("เกิดข้อผิดพลาดในการบันทึกการตั้งค่า: " + ex.Message);
+                }
+            }
+        }
+
+        private void clearFlavorButton_Click(object sender, EventArgs e)
+        {
+            ClearFlavorForm();
+            flavorNameTextBox.Focus();
+        }
+        #endregion
+
+        #region Other Events
+        private void groupBox1_Enter(object sender, EventArgs e) { }
+        private void amountTextBox_TextChanged(object sender, EventArgs e) { }
+        private void button3_Click(object sender, EventArgs e) { }
+        private void historyDataGridView_DataError(object sender, DataGridViewDataErrorEventArgs e) { e.ThrowException = false; }
+        private void bestSellersDataGridView_CellContentClick(object sender, DataGridViewCellEventArgs e) { }
+        #endregion
+
+        private void saveSettingsButton_Click_1(object sender, EventArgs e)
+        {
+            int newMaxTables = (int)maxTablesNumericUpDown.Value;
+
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    // คำสั่งนี้จะ INSERT ถ้ายังไม่มี key 'max_tables' หรือจะ UPDATE ถ้ามีอยู่แล้ว
+                    string query = @"
+                INSERT INTO app_settings (setting_key, setting_value)
+                VALUES ('max_tables', @value)
+                ON DUPLICATE KEY UPDATE setting_value = @value;";
+
+                    var cmd = new MySqlCommand(query, conn);
+                    cmd.Parameters.AddWithValue("@value", newMaxTables.ToString());
+                    conn.Open();
+                    cmd.ExecuteNonQuery();
+                    MessageBox.Show("บันทึกการตั้งค่าจำนวนโต๊ะสำเร็จ!", "สำเร็จ", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("เกิดข้อผิดพลาดในการบันทึกการตั้งค่า: " + ex.Message);
+                }
+            }
+        }
+        private void LoadMemberData(string searchTerm = "")
+        {
+            DataTable memberDataTable = new DataTable();
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    // เราจะไม่ดึงคอลัมน์ password มาแสดงเพื่อความปลอดภัย
+                    string query = "SELECT member_id, first_name, last_name, username FROM members ";
+
+                    // เพิ่มเงื่อนไขการค้นหาถ้ามีการพิมพ์ข้อความเข้ามา
+                    if (!string.IsNullOrWhiteSpace(searchTerm))
+                    {
+                        // ค้นหาทั้งใน first_name และ last_name
+                        query += "WHERE username LIKE @searchTerm";
+                    }
+
+                    var adapter = new MySqlDataAdapter(query, conn);
+
+                    if (!string.IsNullOrWhiteSpace(searchTerm))
+                    {
+                        // ใช้ % เพื่อให้ค้นหาคำที่อยู่ตรงไหนก็ได้
+                        adapter.SelectCommand.Parameters.AddWithValue("@searchTerm", $"%{searchTerm}%");
+                    }
+
+                    conn.Open();
+                    adapter.Fill(memberDataTable);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("เกิดข้อผิดพลาดในการโหลดข้อมูลสมาชิก: " + ex.Message);
+                }
+            }
+            // นำข้อมูลไปแสดงใน DataGridView ใหม่ของเรา
+            membersDataGridView.DataSource = memberDataTable;
+        }
+
+        private void backToLoginButton_Click(object sender, EventArgs e)
+        {
+            this.Close();
+        }
+
+        private void searchMemberTextBox_TextChanged(object sender, EventArgs e)
+        {
+            LoadMemberData(searchMemberTextBox.Text);
+        }
+
+        private void flavorDataGridView_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+
+        }
+
+        private void label6_Click(object sender, EventArgs e)
+        {
+
+        }
+    }
+}
