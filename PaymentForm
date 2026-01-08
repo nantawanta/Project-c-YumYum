@@ -1,0 +1,228 @@
+using MySql.Data.MySqlClient;
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Transactions;
+using System.Windows.Forms;
+
+namespace WinFormsApp2
+{
+    public partial class PaymentForm : Form
+    {
+        private readonly List<OrderItem> itemsToPurchase;
+        private readonly string customerName;
+        private readonly string tableNumber;
+        private readonly DBConnection dbConnection = new DBConnection();
+
+        private decimal subtotal = 0;
+        private decimal vatAmount = 0;
+        private decimal grandTotal = 0;
+
+        private Label subtotalLabel;
+        private Button vatButton;
+
+        public PaymentForm(List<OrderItem> orderItems, string custName, string tableNum)
+        {
+            InitializeComponent();
+            summaryRichTextBox.ScrollBars = RichTextBoxScrollBars.Vertical;
+            this.itemsToPurchase = orderItems;
+            this.customerName = custName;
+            this.tableNumber = tableNum;
+            this.Load += new EventHandler(PaymentForm_Load);
+
+            Font labelFont = new Font("Tahoma", 12, FontStyle.Regular);
+            subtotalLabel = new Label
+            {
+                Font = labelFont,
+                AutoSize = true,
+                Text = "ยอดรวม: 0.00 บาท"
+            };
+
+            vatButton = new Button
+            {
+                Text = "ภาษี 7%: 0.00 บาท",
+                Font = new Font("Tahoma", 12, FontStyle.Regular),
+                AutoSize = true,
+                FlatStyle = FlatStyle.Flat,
+                FlatAppearance = { BorderSize = 0 },
+                Enabled = false,
+                BackColor = Color.Transparent,
+                ForeColor = Color.Black
+            };
+
+            this.Controls.Add(subtotalLabel);
+            this.Controls.Add(vatButton);
+        }
+
+        private void PaymentForm_Load(object? sender, EventArgs e)
+        {
+            customerNameLabel.Text = "ชื่อลูกค้า: " + this.customerName;
+            tableNumberLabel.Text = "โต๊ะ: " + this.tableNumber;
+            customerNameLabel.AutoSize = true;
+            tableNumberLabel.AutoSize = true;
+
+            int yPosition = summaryRichTextBox.Top - customerNameLabel.Height - 5;
+            customerNameLabel.Location = new Point(summaryRichTextBox.Left, yPosition);
+            tableNumberLabel.Location = new Point(summaryRichTextBox.Right - tableNumberLabel.Width, yPosition);
+
+            int yVatPosition = totalPriceLabel.Top - vatButton.Height - 2;
+            int ySubtotalPosition = yVatPosition - subtotalLabel.Height;
+
+            subtotalLabel.Location = new Point(summaryRichTextBox.Left, ySubtotalPosition); //เปลี่ยนเป็นขอบซ้ายของ RichTextBox
+            vatButton.Location = new Point(summaryRichTextBox.Left, yVatPosition); // เปลี่ยนเป็นขอบซ้ายของ RichTextBox
+                                                                                  
+
+            PopulateSummary();
+        }
+
+        private void PopulateSummary()
+        {
+            if (itemsToPurchase == null || !itemsToPurchase.Any())
+            {
+                MessageBox.Show("ไม่มีรายการสินค้าสำหรับชำระเงิน");
+                this.Close();
+                return;
+            }
+            summaryRichTextBox.Clear();
+
+            this.subtotal = itemsToPurchase.Sum(item => item.Price * item.Quantity);
+            this.vatAmount = this.subtotal * 0.07m;
+            this.grandTotal = this.subtotal + this.vatAmount;
+
+            summaryRichTextBox.Font = new Font("Tahoma", 10, FontStyle.Regular);
+
+            // ***** START: EDIT #2 - แก้ไขการแสดงผลใน RichTextBox ใหม่ทั้งหมด *****
+
+            // วนลูปเพื่อแสดงรายการสินค้าแต่ละรายการ
+            foreach (var item in itemsToPurchase)
+            {
+                // 1. สร้างข้อความส่วนต่างๆ
+                string quantityText = $"{item.Quantity} x ";
+                string itemText = $"{item.Name} {item.Flavors}";
+                string priceText = $"{(item.Quantity * item.Price):N2} บาท";
+
+                // 2. ใช้ RichTextBoxSelectionColor เพื่อกำหนดสีข้อความแต่ละส่วนได้ (ทางเลือก)
+                summaryRichTextBox.SelectionColor = Color.Black;
+                summaryRichTextBox.AppendText(quantityText);
+                summaryRichTextBox.AppendText(itemText);
+
+                // 3. คำนวณ space ที่ต้องเติมเพื่อดันราคาไปชิดขวา
+                using (Graphics g = summaryRichTextBox.CreateGraphics())
+                {
+                    string textOnLine = quantityText + itemText;
+                    float leftWidth = g.MeasureString(textOnLine, summaryRichTextBox.Font).Width;
+                    float rightWidth = g.MeasureString(priceText, summaryRichTextBox.Font).Width;
+                    float totalWidth = summaryRichTextBox.ClientSize.Width - 10;
+
+                    if (leftWidth + rightWidth < totalWidth)
+                    {
+                        float spaceWidth = g.MeasureString(" ", summaryRichTextBox.Font).Width;
+                        // +1 เพื่อให้แน่ใจว่ามีช่องว่างอย่างน้อย 1 space
+                        int spacesToAdd = (int)((totalWidth - leftWidth - rightWidth) / spaceWidth) + 1;
+                        if (spacesToAdd > 0)
+                        {
+                            summaryRichTextBox.AppendText(new string(' ', spacesToAdd));
+                        }
+                    }
+                }
+
+                // 4. เพิ่มข้อความราคาและขึ้นบรรทัดใหม่
+                summaryRichTextBox.AppendText(priceText + "\n");
+            }
+            // ***** END: EDIT #2 *****
+
+            subtotalLabel.Text = $"ยอดรวม: {this.subtotal:N2} บาท";
+            vatButton.Text = $"ภาษี 7%: {this.vatAmount:N2} บาท";
+            totalPriceLabel.Text = $"ยอดที่ต้องชำระ : {this.grandTotal:N2} บาท (รวมภาษี 7% แล้ว)";
+        }
+
+        private void confirmPaymentButton_Click(object sender, EventArgs e)
+        {
+            Image qrCodeImage;
+            using (var ms = new MemoryStream(Properties.Resources.Qrcode))
+            {
+                qrCodeImage = new Bitmap(ms);
+            }
+
+            using (var confirmationForm = new PaymentConfirmationForm(qrCodeImage, this.grandTotal))
+            {
+                if (confirmationForm.ShowDialog() == DialogResult.OK)
+                {
+                    string customerPhone = confirmationForm.PhoneNumber;
+                    byte[]? slipImage = confirmationForm.SlipImageBytes;
+
+                    if (ProcessPaymentAndUpdateStock(customerPhone, slipImage))
+                    {
+                        using (var receipt = new ReceiptForm(this.itemsToPurchase, this.customerName, this.tableNumber, this.subtotal, this.vatAmount, this.grandTotal))
+                        {
+                            receipt.ShowDialog();
+                        }
+                        this.DialogResult = DialogResult.OK;
+                        this.Close();
+                    }
+                }
+            }
+        }
+
+        private bool ProcessPaymentAndUpdateStock(string customerPhone, byte[]? slipImage)
+        {
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                MySqlTransaction? transaction = null;
+                try
+                {
+                    conn.Open();
+                    transaction = conn.BeginTransaction();
+                    foreach (var item in itemsToPurchase)
+                    {
+                        string stockQuery = "UPDATE stock SET amount = amount - @quantity WHERE name = @name AND amount >= @quantity";
+                        var stockCmd = new MySqlCommand(stockQuery, conn, transaction);
+                        stockCmd.Parameters.AddWithValue("@quantity", item.Quantity);
+                        stockCmd.Parameters.AddWithValue("@name", item.Name);
+                        if (stockCmd.ExecuteNonQuery() == 0)
+                        {
+                            throw new Exception($"สินค้า '{item.Name}' มีไม่เพียงพอในสต็อก!");
+                        }
+
+                        string historyQuery = @"INSERT INTO history (
+                                            order_datetime, customer_name, customer_table, customer_phone,
+                                            food_name, amount, price_per_item, total_price, 
+                                            flavor_details, slip_image
+                                        ) VALUES (
+                                            NOW(), @customerName, @customerTable, @customerPhone,
+                                            @name, @quantity, @price, @total, 
+                                            @flavors, @slipImage
+                                        )";
+                        var historyCmd = new MySqlCommand(historyQuery, conn, transaction);
+                        historyCmd.Parameters.AddWithValue("@customerName", this.customerName);
+                        historyCmd.Parameters.AddWithValue("@customerTable", this.tableNumber);
+                        historyCmd.Parameters.AddWithValue("@customerPhone", customerPhone);
+                        historyCmd.Parameters.AddWithValue("@name", item.Name);
+                        historyCmd.Parameters.AddWithValue("@quantity", item.Quantity);
+                        historyCmd.Parameters.AddWithValue("@price", item.Price);
+                        historyCmd.Parameters.AddWithValue("@total", item.Quantity * item.Price);
+                        historyCmd.Parameters.AddWithValue("@flavors", item.Flavors);
+                        historyCmd.Parameters.AddWithValue("@slipImage", slipImage ?? (object)DBNull.Value);
+                        historyCmd.ExecuteNonQuery();
+                    }
+                    transaction.Commit();
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    try { transaction?.Rollback(); } catch { }
+                    MessageBox.Show("เกิดข้อผิดพลาดในการบันทึกข้อมูล: " + ex.Message);
+                    return false;
+                }
+            }
+        }
+
+        private void cancelButton_Click(object sender, EventArgs e)
+        {
+            this.DialogResult = DialogResult.Cancel;
+            this.Close();
+        }
+    }
+}
