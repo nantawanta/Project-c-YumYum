@@ -1,0 +1,178 @@
+using MySql.Data.MySqlClient;
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Linq;
+using System.Windows.Forms;
+
+namespace WinFormsApp2
+{
+    public partial class FlavorSelectionForm : Form
+    {
+
+        public List<string> SelectedFlavorOptions { get; private set; }
+        public string SelectedSpiceLevel { get; private set; }
+        public int SelectedQuantity { get; private set; }
+        public string SelectedFlavorsSummary { get; private set; }
+        private bool isUpdatingCheckedListBox = false;
+
+        public FlavorSelectionForm(string itemName)
+        {
+            InitializeComponent();
+            itemNameLabel.Text = "ปรับแต่งรสชาติสำหรับ: " + itemName;
+            SelectedFlavorOptions = new List<string>();
+            SelectedSpiceLevel = "";
+            SelectedQuantity = 1;
+            SelectedFlavorsSummary = "";
+            LoadAllOptions();
+            flavorsCheckedListBox.ItemCheck += new ItemCheckEventHandler(flavorsCheckedListBox_ItemCheck);
+        }
+        private void LoadAllOptions()
+        {
+            var dbConn = new DBConnection();
+            using (var conn = new MySqlConnection(dbConn.connection.ConnectionString))
+            {
+                try
+                {
+                    conn.Open();
+                    string spiceQuery = "SELECT spice_name, is_default FROM spice_levels ORDER BY spice_id";
+                    var spiceCmd = new MySqlCommand(spiceQuery, conn);
+                    using (var spiceReader = spiceCmd.ExecuteReader())
+                    {
+                       
+                        int radioYPos = 40; // ลดตำแหน่งเริ่มต้น
+                        int verticalSpacing = 28; // เพิ่มระยะห่างระหว่างปุ่ม
+                        while (spiceReader.Read())
+                        {
+                            var radio = new RadioButton
+                            {
+                                Text = spiceReader["spice_name"].ToString(),
+                                Location = new Point(15, radioYPos), // ขยับไปทางซ้ายเล็กน้อย
+                                AutoSize = true,
+                                Font = new Font("Tahoma", 10), // กำหนดฟอนต์และขนาดให้ชัดเจน
+                                Checked = spiceReader.GetBoolean("is_default")
+                            };
+                            spiceLevelGroupBox.Controls.Add(radio);
+                            radioYPos += verticalSpacing; // ใช้ระยะห่างใหม่
+                        }
+                        
+                    }
+
+                    flavorsCheckedListBox.Items.Clear();
+                    string flavorQuery = "SELECT flavor_name FROM other_flavors ORDER BY flavor_name";
+                    var flavorCmd = new MySqlCommand(flavorQuery, conn);
+                    using (var flavorReader = flavorCmd.ExecuteReader())
+                    {
+                        while (flavorReader.Read())
+                        {
+                            flavorsCheckedListBox.Items.Add(flavorReader["flavor_name"].ToString());
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("ไม่สามารถโหลดตัวเลือกจากฐานข้อมูลได้: " + ex.Message);
+                }
+            }
+        }
+        private void flavorsCheckedListBox_ItemCheck(object sender, ItemCheckEventArgs e)
+        {
+            // ถ้าการเปลี่ยนแปลงเกิดจากโค้ดของเราเอง ให้ออกจากฟังก์ชันไป
+            if (isUpdatingCheckedListBox) return;
+
+            // ดึงชื่อรายการที่กำลังจะถูกเปลี่ยนแปลง
+            string currentItem = flavorsCheckedListBox.Items[e.Index].ToString();
+
+            // --- Logic ส่วนที่ 1: เมื่อกำลังจะติ๊ก "ไม่เพิ่มรสชาติ" ---
+            if (currentItem == "ไม่เพิ่มรสชาติ" && e.NewValue == CheckState.Checked)
+            {
+                // ตั้งค่าสถานะว่าเรากำลังจะอัปเดต ListBox
+                isUpdatingCheckedListBox = true;
+
+                // วนลูปเพื่อ "ล้าง" ติ๊กทุกรายการ
+                for (int i = 0; i < flavorsCheckedListBox.Items.Count; i++)
+                {
+                    if (i != e.Index) // ยกเว้นรายการ "ไม่เพิ่มรสชาติ" ที่เรากำลังจะติ๊ก
+                    {
+                        flavorsCheckedListBox.SetItemChecked(i, false);
+                    }
+                }
+
+                // ยกเลิกสถานะ
+                isUpdatingCheckedListBox = false;
+            }
+            // --- Logic ส่วนที่ 2: เมื่อกำลังจะติ๊ก "รายการอื่น" (ที่ไม่ใช่ "ไม่เพิ่มรสชาติ") ---
+            else if (currentItem != "ไม่เพิ่มรสชาติ" && e.NewValue == CheckState.Checked)
+            {
+                // ตั้งค่าสถานะ
+                isUpdatingCheckedListBox = true;
+
+                // หา Index ของรายการ "ไม่เพิ่มรสชาติ"
+                int noFlavorIndex = -1;
+                for (int i = 0; i < flavorsCheckedListBox.Items.Count; i++)
+                {
+                    if (flavorsCheckedListBox.Items[i].ToString() == "ไม่เพิ่มรสชาติ")
+                    {
+                        noFlavorIndex = i;
+                        break;
+                    }
+                }
+
+                // ถ้าเจอ และมันกำลังถูกติ๊กอยู่ ให้ล้างติ๊กออก
+                if (noFlavorIndex != -1 && flavorsCheckedListBox.GetItemChecked(noFlavorIndex))
+                {
+                    flavorsCheckedListBox.SetItemChecked(noFlavorIndex, false);
+                }
+
+                // ยกเลิกสถานะ
+                isUpdatingCheckedListBox = false;
+            }
+        }
+        private void okButton_Click(object sender, EventArgs e)
+        {
+            if (flavorsCheckedListBox.CheckedItems.Count == 0)// ตรวจสอบว่ามีรายการใน "เลือกรสชาติอื่นๆ" ถูกติ๊กหรือไม่
+            {
+                // 2. ถ้าไม่มีรายการถูกติ๊กเลย ให้แสดง MessageBox แจ้งเตือน
+                MessageBox.Show(
+                    "กรุณาเลือกรสชาติเพิ่มเติม หากต้องการรสชาติดั้งเดิมให้กด \"ไม่เพิ่มรสชาติ\"", 
+                    "ข้อมูลไม่ครบถ้วน",// หัวข้อของ MessageBox
+                    MessageBoxButtons.OK,// ปุ่มที่แสดง (OK)
+                    MessageBoxIcon.Warning // ไอคอนแจ้งเตือน
+                );                
+                return;//หยุดการทำงานของเมธอดนี้ทันที ไม่ให้โค้ดส่วนล่างทำงานต่อ
+            }
+           
+            var allOptions = new List<string>();
+
+            var selectedSpice = spiceLevelGroupBox.Controls.OfType<RadioButton>().FirstOrDefault(r => r.Checked);
+            if (selectedSpice != null)
+            {
+                allOptions.Add(selectedSpice.Text);
+            }
+
+            foreach (var item in flavorsCheckedListBox.CheckedItems)
+            {
+                allOptions.Add(item.ToString() ?? "");
+            }
+
+            if (allOptions.Any())
+            {
+                SelectedFlavorsSummary = $"({string.Join(", ", allOptions)})";
+            }
+            else
+            {
+                SelectedFlavorsSummary = "";
+            }
+
+            this.SelectedQuantity = (int)quantityNumericUpDown.Value;
+            this.DialogResult = DialogResult.OK;
+            this.Close();
+        }
+
+        private void cancelButton_Click(object sender, EventArgs e)
+        {
+            this.DialogResult = DialogResult.Cancel;
+            this.Close();
+        }
+    }
+}
