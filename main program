@@ -1,0 +1,47 @@
+using System;
+using System.Windows.Forms;
+
+namespace WinFormsApp2
+{
+    static class Program
+    {
+        [STAThread]
+        static void Main()
+        {
+            Application.SetHighDpiMode(HighDpiMode.SystemAware);
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+
+            while (true)
+            {
+                // 1. สร้างและแสดง LoginForm ทุกครั้งที่วนลูปกลับมา
+                using (var loginForm = new LoginForm())
+                {
+                    
+                    if (loginForm.ShowDialog() == DialogResult.OK)// แสดง LoginForm และรอจนกว่าจะถูกปิด
+                    {
+                        // 2. ถ้าล็อกอินสำเร็จ (DialogResult เป็น OK) ให้ตรวจสอบว่าเป็น Admin หรือ สมาชิกทั่วไป                         
+                        if (loginForm.IsAdmin)
+                        {
+                            using (var adminForm = new AdminForm()) // ถ้าเป็น Admin -> เปิด AdminForm
+                            {
+                                adminForm.ShowDialog();
+                            }                           
+                        }
+                        else
+                        {                          
+                            using (var mainForm = new Form1(loginForm.LoggedInUsername)) // ถ้าเป็นสมาชิก -> เปิด Form1
+                            {
+                                mainForm.ShowDialog(); 
+                            }                           
+                        }
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
