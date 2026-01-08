@@ -1,0 +1,101 @@
+using MySql.Data.MySqlClient;
+using System;
+using System.Security.Cryptography;
+using System.Text;
+using System.Windows.Forms;
+
+namespace WinFormsApp2
+{
+    public partial class LoginForm : Form
+    {
+        private readonly DBConnection dbConnection = new DBConnection();
+        public bool IsAdmin { get; private set; } = false;
+        public string LoggedInUsername { get; private set; } = "";
+
+        public LoginForm()
+        {
+            InitializeComponent();
+        }
+
+        private void btnLogin_Click(object sender, EventArgs e)
+        {
+            string username = usernameTextBox.Text.Trim();
+            string password = passwordTextBox.Text;
+
+            if (username.ToLower() == "admin" && password == "1234")
+            {
+                IsAdmin = true;
+                this.DialogResult = DialogResult.OK; // ส่งสัญญาณกลับไปว่าล็อกอินสำเร็จ
+                this.Close();
+                return;
+            }
+
+            // --- 2. ตรวจสอบสมาชิกทั่วไปจากฐานข้อมูล (โค้ดส่วนนี้จะทำงานก็ต่อเมื่อไม่ใช่ Admin) ---
+            using (var conn = new MySqlConnection(dbConnection.connection.ConnectionString))
+            {
+                try
+                {
+                    conn.Open();
+                    string query = "SELECT COUNT(*) FROM members WHERE username = @username AND password = @password";
+                    var cmd = new MySqlCommand(query, conn);
+                    cmd.Parameters.AddWithValue("@username", username);
+                    cmd.Parameters.AddWithValue("@password", password);
+
+                    long count = (long)cmd.ExecuteScalar();
+
+                    if (count > 0)
+                    {
+                        this.LoggedInUsername = username;
+                        IsAdmin = false;
+                        this.DialogResult = DialogResult.OK;
+                        this.Close();
+                    }
+                    else
+                    {
+                        MessageBox.Show("Username หรือ Password ไม่ถูกต้อง", "ล็อกอินไม่สำเร็จ", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("เกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล: " + ex.Message, "ข้อผิดพลาด", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        // ฟังก์ชันเข้ารหัสผ่าน (ต้องเหมือนกับใน RegisterForm)
+        private string ComputeSha256Hash(string rawData)
+        {
+            using (SHA256 sha256Hash = SHA256.Create())
+            {
+                byte[] bytes = sha256Hash.ComputeHash(Encoding.UTF8.GetBytes(rawData));
+                StringBuilder builder = new StringBuilder();
+                for (int i = 0; i < bytes.Length; i++)
+                {
+                    builder.Append(bytes[i].ToString("x2"));
+                }
+                return builder.ToString();
+            }
+        }
+
+        private void linkRegister_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
+        {
+            using (var registerForm = new RegisterForm())
+            {
+                this.Hide(); // ซ่อนหน้าล็อกอินชั่วคราว
+                registerForm.ShowDialog();
+                this.Show(); // กลับมาแสดงหน้าล็อกอินอีกครั้ง
+            }
+        }
+
+        private void linkForgotPassword_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
+        {
+            // เปลี่ยนจากการแสดง MessageBox เป็นการเปิดฟอร์ม ForgotPasswordForm
+            using (var forgotPasswordForm = new ForgotPasswordForm())
+            {
+                this.Hide(); // ซ่อนหน้าล็อกอิน
+                forgotPasswordForm.ShowDialog(); // เปิดหน้าลืมรหัสผ่าน
+                this.Show(); // กลับมาแสดงหน้าล็อกอินอีกครั้ง
+            }
+        }
+    }
+}
