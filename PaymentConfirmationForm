@@ -1,0 +1,84 @@
+using System;
+using System.Drawing;
+using System.IO;
+using System.Text.RegularExpressions;
+using System.Windows.Forms;
+
+namespace WinFormsApp2
+{
+    public partial class PaymentConfirmationForm : Form
+    {
+        public string PhoneNumber { get; private set; } = "";
+        public byte[]? SlipImageBytes { get; private set; }
+
+        // Constructor รับค่า grandTotal เข้ามา (เรายังใช้ชื่อตัวแปร totalPrice ได้เพื่อความง่าย)
+        public PaymentConfirmationForm(Image qrImage, decimal totalPrice)
+        {
+            InitializeComponent();
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+
+            qrCodePictureBox.Image = qrImage;           
+            totalPriceLabel.Text = $"ยอดชำระสุทธิ: {totalPrice:N2} บาท";
+           
+        }
+
+        // (เมธอด uploadButton_Click, confirmButton_Click, cancelButton_Click เหมือนเดิม)
+        private void uploadButton_Click(object sender, EventArgs e)
+        {
+            using (var ofd = new OpenFileDialog())
+            {
+                ofd.Filter = "Image Files|*.jpg;*.jpeg;*.png";
+                if (ofd.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {                        
+                        this.SlipImageBytes = File.ReadAllBytes(ofd.FileName);
+                        using (var ms = new MemoryStream(this.SlipImageBytes))
+                        {
+                            slipPictureBox.Image = Image.FromStream(ms);
+                        }
+                       
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show("ไม่สามารถโหลดไฟล์รูปภาพได้: " + ex.Message);
+                        this.SlipImageBytes = null;
+                        slipPictureBox.Image = null;
+                    }
+                }
+            }
+        }
+
+        private void confirmButton_Click(object sender, EventArgs e)
+        {            
+            if (this.SlipImageBytes == null)
+            {
+                MessageBox.Show("กรุณาอัปโหลดสลิปการโอนเงินเพื่อยืนยัน");
+                return;
+            }
+          
+            string phoneNumber = phoneTextBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(phoneNumber) || !Regex.IsMatch(phoneNumber, @"^\d{10}$"))
+            {
+                MessageBox.Show("กรุณากรอกเบอร์โทรศัพท์ให้ถูกต้อง (ตัวเลข 10 หลัก)");
+                phoneTextBox.Focus();
+                return;
+            }
+            this.PhoneNumber = phoneNumber;
+            this.DialogResult = DialogResult.OK;
+            this.Close();
+        }
+
+        private void cancelButton_Click(object sender, EventArgs e)
+        {
+            this.DialogResult = DialogResult.Cancel;
+            this.Close();
+        }
+
+        private void phoneTextBox_TextChanged(object sender, EventArgs e)
+        {
+
+        }
+    }
+}
