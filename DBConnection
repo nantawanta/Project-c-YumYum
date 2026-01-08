@@ -1,0 +1,57 @@
+using MySql.Data.MySqlClient;
+using System.Data;
+using System; // เพิ่มเข้ามาเพื่อใช้ ArgumentNullException
+using System.Windows.Forms;
+
+namespace WinFormsApp2
+{
+    class DBConnection
+    {        
+        private readonly string connectionString = "SERVER=localhost;DATABASE=finalproject;UID=root;PASSWORD=;";       
+        public MySqlConnection connection;
+
+        public DBConnection()
+        {
+            if (string.IsNullOrEmpty(this.connectionString) || !this.connectionString.Contains("DATABASE"))
+            {
+                MessageBox.Show("Connection String ไม่ได้ตั้งค่าหรือไม่มีชื่อฐานข้อมูล!", "Configuration Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                throw new ArgumentNullException("connectionString", "Please provide a valid connection string in DBConnection.cs");
+            }
+            this.connection = new MySqlConnection(this.connectionString);
+        }
+
+        // เมธอดเหล่านี้มีไว้เผื่อใช้ แต่โค้ดล่าสุดจะใช้วิธีสร้าง Connection ใหม่ด้วย using statement
+        public bool OpenConnection()
+        {
+            try
+            {
+                if (connection.State == ConnectionState.Closed)
+                {
+                    connection.Open();
+                }
+                return true;
+            }
+            catch (MySqlException ex)
+            {
+                MessageBox.Show("ไม่สามารถเชื่อมต่อฐานข้อมูลได้ \n" + ex.Message, "Database Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+        }
+        public bool CloseConnection()
+        {
+            try
+            {
+                if (connection.State == ConnectionState.Open)
+                {
+                    connection.Close();
+                }
+                return true;
+            }
+            catch (MySqlException ex)
+            {
+                MessageBox.Show("เกิดข้อผิดพลาดขณะปิดการเชื่อมต่อ \n" + ex.Message, "Database Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+        }
+    }
+}
